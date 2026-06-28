@@ -215,4 +215,248 @@ Responda APENAS com JSON array ([] se nenhum qualificar):
 
     resp = client.chat.completions.create(
         model=MODEL,
- 
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+    )
+
+    try:
+        companies = parse_json(resp.choices[0].message.content)
+        new_qualified = []
+        newly_blocked = []
+        for c in companies:
+            if not isinstance(c, dict):
+                continue
+            if c.get("fit_score", 0) < 6:
+                continue
+            if not is_company_website(c.get("website", "")):
+                newly_blocked.append(c.get("website", ""))
+            else:
+                new_qualified.append(c)
+    except Exception:
+        new_qualified = []
+        newly_blocked = []
+
+    existing_qualified = state.get("qualified_companies", [])
+    existing_blocked = state.get("debug_blocked_urls", [])
+    merged = existing_qualified + new_qualified
+    blocked = existing_blocked + newly_blocked
+    return {"qualified_companies": merged, "debug_blocked_urls": blocked}
+
+
+def enrich_companies(state: ProspectorState) -> dict:
+    """Para cada empresa: scraping real do site + busca do CEO/fundador."""
+    companies = state["qualified_companies"]
+    enriched = []
+
+    for company in companies:
+        # 1. Scraping real do site
+        website_text = scrape_website(company["website"])
+
+        # 2. Tentar extrair decisor do conteúdo do site (grátis, já temos o texto)
+        decision_maker = None
+        if website_text:
+            dm_site_prompt = f"""Analise o texto abaixo da homepage da empresa "{company['name']}" e extraia o nome do CEO, fundador ou principal liderança mencionado.
+Se não encontrar nenhum nome com certeza, retorne null.
+
+Texto do site:
+{website_text[:1500]}
+
+Responda APENAS com JSON: {{"name": "Nome Completo", "role": "CEO"}} ou null"""
+
+            dm_site_resp = client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": dm_site_prompt}],
+                temperature=0.0,
+            )
+            try:
+                dm_raw = dm_site_resp.choices[0].message.content.strip()
+                decision_maker = None if dm_raw.lower() == "null" else parse_json(dm_raw)
+            except Exception:
+                decision_maker = None
+
+        # 3. Fallback: buscar decisor via Serper se não achou no site
+        if not decision_maker:
+            dm_results = serper_search(
+                f'"{company["name"]}" CEO fundador founder diretor',
+                num=5
+            )
+            dm_snippets = " | ".join([
+                r.get("title", "") + " " + r.get("snippet", "")
+                for r in dm_results
+            ])
+            if dm_snippets:
+                dm_serper_prompt = f"""Dado os resultados abaixo, extraia o nome do CEO ou fundador da empresa "{company['name']}".
+Só retorne se tiver certeza razoável. Se não encontrar, retorne null.
+
+Resultados:
+{dm_snippets}
+
+Responda APENAS com JSON: {{"name": "Nome Completo", "role": "CEO"}} ou null"""
+
+                dm_serper_resp = client.chat.completions.create(
+                    model=MODEL,
+                    messages=[{"role": "user", "content": dm_serper_prompt}],
+                    temperature=0.0,
+                )
+                try:
+                    dm_raw = dm_serper_resp.choices[0].message.content.strip()
+                    decision_maker = None if dm_raw.lower() == "null" else parse_json(dm_raw)
+                except Exception:
+                    decision_maker = None
+
+        # 4. Buscar email via Hunter.io
+        hunter_key = state.get("hunter_api_key")
+        email_result = None
+        if hunter_key:
+            if decision_maker and decision_maker.get("name"):
+                # Email finder por nome + domínio
+                parts = decision_maker["name"].split(" ", 1)
+                email_result = find_email(parts[0], parts[1] if len(parts) > 1 else "", company["website"], hunter_key)
+
+            if not email_result:
+                # Domain search como fallback — retorna qualquer email do domínio
+                from email_sender import domain_search_email
+                email_result = domain_search_email(company["website"], hunter_key)
+
+        enriched.append({
+            **company,
+            "website_content": website_text,
+            "decision_maker": decision_maker,
+            "email_result": email_result,
+        })
+
+    return {"enriched_companies": enriched}
+
+
+def write_messages(state: ProspectorState) -> dict:
+    icp = state["icp"]
+    companies = state["enriched_companies"]
+    visited = load_visited()
+    final_prospects = []
+
+    for company in companies:
+        dm = company.get("decision_maker")
+        dm_info = f"Contato: {dm['name']} ({dm['role']})" if dm else "Contato: não identificado"
+        website_ctx = company.get("website_content", "")
+        website_block = f"\nConteúdo real do site:\n{website_ctx[:800]}" if website_ctx else ""
+
+        prompt = f"""Você é especialista em cold outreach B2B.
+
+Empresa: {company['name']}
+Site: {company['website']}
+Descrição: {company['description']}
+{dm_info}{website_block}
+
+Contexto: buscamos clientes com perfil — {icp}
+
+Gere 3 variações de mensagem de prospecção, cada uma com um ângulo diferente:
+- Variação 1: foco no problema que a empresa provavelmente enfrenta
+- Variação 2: foco no resultado/benefício que você entrega
+- Variação 3: tom mais direto e curto (2 linhas máximo)
+
+Regras para todas:
+- Se tiver nome do contato, dirija-se pelo primeiro nome
+- Use algo específico da empresa (nunca genérico)
+- CTA direto e sem pressão
+- Tom humano, português brasileiro
+- Proibido: "Espero que esteja bem", frases genéricas, superlativos
+
+Responda APENAS com JSON array de 3 strings:
+["mensagem 1", "mensagem 2", "mensagem 3"]"""
+
+        resp = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+
+        try:
+            mensagens = parse_json(resp.choices[0].message.content)
+            if not isinstance(mensagens, list) or len(mensagens) < 1:
+                raise ValueError
+        except Exception:
+            mensagens = [resp.choices[0].message.content.strip()]
+
+        email_data = company.get("email_result")
+        final_prospects.append({
+            "empresa": company["name"],
+            "website": company["website"],
+            "descricao": company["description"],
+            "fit_score": company["fit_score"],
+            "motivo_fit": company["fit_reason"],
+            "decisor": dm["name"] if dm else None,
+            "cargo_decisor": dm["role"] if dm else None,
+            "email": email_data["email"] if email_data else None,
+            "email_score": email_data["score"] if email_data else None,
+            "mensagens": mensagens,
+        })
+
+        visited.add(company["website"])
+
+    save_visited(visited)
+    return {"final_prospects": final_prospects}
+
+
+# ── Roteamento ────────────────────────────────────────────────────────────────
+
+def route_after_qualify(state: ProspectorState) -> str:
+    qualified_count = len(state.get("qualified_companies", []))
+    attempts = state.get("attempts", 0)
+    if qualified_count < MIN_PROSPECTS and attempts < MAX_ATTEMPTS:
+        return "generate_queries"
+    return "enrich_companies"
+
+
+# ── Grafo ─────────────────────────────────────────────────────────────────────
+
+def build_graph():
+    graph = StateGraph(ProspectorState)
+
+    graph.add_node("generate_queries", generate_queries)
+    graph.add_node("search_web", search_web)
+    graph.add_node("qualify_results", qualify_results)
+    graph.add_node("enrich_companies", enrich_companies)
+    graph.add_node("write_messages", write_messages)
+
+    graph.set_entry_point("generate_queries")
+    graph.add_edge("generate_queries", "search_web")
+    graph.add_edge("search_web", "qualify_results")
+    graph.add_conditional_edges("qualify_results", route_after_qualify, {
+        "generate_queries": "generate_queries",
+        "enrich_companies": "enrich_companies",
+    })
+    graph.add_edge("enrich_companies", "write_messages")
+    graph.add_edge("write_messages", END)
+
+    return graph.compile()
+
+
+prospector = build_graph()
+
+
+def run_prospector(icp: str, hunter_api_key: str = None):
+    """Retorna (prospects, debug_info)."""
+    result = prospector.invoke({
+        "icp": icp,
+        "attempts": 0,
+        "previous_queries": [],
+        "queries": [],
+        "raw_results": [],
+        "qualified_companies": [],
+        "enriched_companies": [],
+        "final_prospects": [],
+        "hunter_api_key": hunter_api_key,
+        "debug_blocked_urls": [],
+        "debug_all_queries": [],
+    })
+
+    debug_info = {
+        "attempts": result.get("attempts", 1),
+        "queries": result.get("debug_all_queries", []),
+        "raw_results_count": len(result.get("raw_results", [])),
+        "qualified_count": len(result.get("qualified_companies", [])),
+        "blocked_urls": result.get("debug_blocked_urls", []),
+        "enriched_count": len(result.get("enriched_companies", [])),
+    }
+
+    return result["final_prospects"], debug_info
