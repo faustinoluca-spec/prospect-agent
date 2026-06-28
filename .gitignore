@@ -1,0 +1,11 @@
+# Segredos — NUNCA subir para o GitHub
+.env
+.streamlit/secrets.toml
+
+# Dados locais
+*.json
+user_configs/
+__pycache__/
+*.pyc
+.Python
+venv/
