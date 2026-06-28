@@ -36,6 +36,7 @@ st.markdown("""
     min-height: 100vh;
 }
 #MainMenu, footer, header { visibility: hidden; }
+[data-testid="collapsedControl"] { visibility: visible !important; }
 .main .block-container { padding-top: 0; padding-bottom: 3rem; max-width: 1080px; }
 
 /* ── Sidebar ── */
