@@ -16,14 +16,17 @@ from auth import (
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
-st.set_page_config(page_title="AI Prospector", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="AI Prospector", page_icon="🎯", layout="wide", initial_sidebar_state="expanded")
 
 # ── Global CSS ────────────────────────────────────────────────────────────────
 
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-* { font-family: 'Inter', sans-serif !important; box-sizing: border-box; }
+* { box-sizing: border-box; }
+body, p, div, span, h1, h2, h3, h4, h5, h6, button, input, textarea, select, label, a {
+    font-family: 'Inter', sans-serif;
+}
 
 /* ── Base ── */
 .stApp {
@@ -36,8 +39,9 @@ st.markdown("""
     min-height: 100vh;
 }
 #MainMenu, footer { visibility: hidden; }
-header { visibility: hidden; height: 0; padding: 0 !important; }
+header { visibility: hidden; }
 [data-testid="collapsedControl"] { visibility: visible !important; display: flex !important; }
+[data-testid="collapsedControl"] * { visibility: visible !important; }
 .main .block-container { padding-top: 0; padding-bottom: 3rem; max-width: 1080px; }
 
 /* ── Sidebar ── */
