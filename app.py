@@ -35,8 +35,9 @@ st.markdown("""
     background-size: 100% 100%, 48px 48px, 48px 48px;
     min-height: 100vh;
 }
-#MainMenu, footer, header { visibility: hidden; }
-[data-testid="collapsedControl"] { visibility: visible !important; }
+#MainMenu, footer { visibility: hidden; }
+header { visibility: hidden; height: 0; padding: 0 !important; }
+[data-testid="collapsedControl"] { visibility: visible !important; display: flex !important; }
 .main .block-container { padding-top: 0; padding-bottom: 3rem; max-width: 1080px; }
 
 /* ── Sidebar ── */
@@ -372,10 +373,8 @@ def show_app():
             Groq &nbsp;·&nbsp; LangGraph &nbsp;·&nbsp; Serper &nbsp;·&nbsp; Hunter.io
         </div>
         <h1 style="font-size:3.2rem; font-weight:900; line-height:1.08; margin:0 0 1.1rem 0;
-                   background:linear-gradient(135deg,#f8fafc 0%,#a5b4fc 45%,#22d3ee 100%);
-                   -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
-                   letter-spacing:-0.03em;">
-            Encontre clientes.<br>Não apenas contatos.
+                   color:#f8fafc; letter-spacing:-0.03em;">
+            Encontre clientes.<br><span style="color:#818cf8;">Não apenas contatos.</span>
         </h1>
         <p style="color:#475569; font-size:1rem; max-width:520px; margin:0 auto 2.75rem auto; line-height:1.75; font-weight:400;">
             Descreva quem você quer atingir. O agente pesquisa na web, analisa os sites,
